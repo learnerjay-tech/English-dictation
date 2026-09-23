@@ -246,7 +246,7 @@ kbd{font-family:var(--mono);font-size:11px;border:1px solid currentColor;border-
         <p class="note">Claude가 만들어 준 레슨 파일(.json)이나 백업 파일을 불러와요.</p>
         <label class="btn primary" for="jsonIn" style="justify-content:center">레슨/백업 파일 불러오기<input type="file" id="jsonIn" accept=".json,application/json" multiple hidden></label>
         <button class="btn" type="button" id="exportAll" style="justify-content:center">전체 백업 내려받기</button>
-        <p class="note">기록은 이 브라우저에만 저장돼요. 다른 기기로 옮길 땐 백업 파일을 내려받아 그 기기에서 불러오세요.</p>
+        <p class="note">레슨과 공부 기록은 지금 쓰는 이 컴퓨터의 이 브라우저 안에만 저장돼요. 휴대폰이나 다른 브라우저에서 열면 비어 있어요. 옮기려면 ‘전체 백업 내려받기’로 받은 파일을 그쪽에서 불러오세요. 브라우저 방문 기록·쿠키를 지우면 기록도 지워지니, 가끔 백업해 두세요.</p>
       </div>
       <form class="add" id="addForm" novalidate>
         <h2>새 레슨 추가</h2>
@@ -311,7 +311,7 @@ let store = null;
 /* ---------- storage: shared db, local fallback ---------- */
 const LS_KEY = "dictation-note-v1";
 let segEnd=null, segTimer=0, yt=null, ytReady=false, ytVid="";
-try{ S.rate=+(localStorage.getItem(LS_KEY+":rate")||1)||1; S.autoPlay=localStorage.getItem(LS_KEY+":auto")!=="0"; }catch(e){ S.rate=1; S.autoPlay=true; }
+try{ S.rate=+(localStorage.getItem(LS_KEY+":rate")||1)||1; S.autoPlay=localStorage.getItem(LS_KEY+":auto")!=="0"; S.lock=localStorage.getItem(LS_KEY+":lock")!=="0"; }catch(e){ S.rate=1; S.autoPlay=true; S.lock=true; }
 let sampleFn=null, assetsApi=null;
 function lsRead(){ try{ return JSON.parse(localStorage.getItem(LS_KEY)||"[]"); }catch(e){ return []; } }
 function lsWrite(arr){ try{ localStorage.setItem(LS_KEY, JSON.stringify(arr)); }catch(e){} }
@@ -695,7 +695,7 @@ function playerHTML(){ return ""; }
 window.onYouTubeIframeAPIReady=function(){
   yt=new YT.Player("ytPlayer",{ width:"100%", height:"100%", videoId: ytVid||undefined,
     playerVars:{ rel:0, modestbranding:1, playsinline:1, cc_load_policy:0, iv_load_policy:3 },
-    events:{ onReady:()=>{ ytReady=true; try{ yt.setPlaybackRate(S.rate); }catch(e){} const L=cur(); if(L) mountVideo(L); },
+    events:{ onReady:()=>{ ytReady=true; try{ yt.setPlaybackRate(S.rate); }catch(e){} const L=cur(); if(L){ mountVideo(L); setTimeout(cueSentence,600); } },
              onError:e=>{ toast(e.data===101||e.data===150?"이 영상은 다른 사이트에서 재생할 수 없게 막혀 있어요. ‘유튜브에서 영상 열기’를 써 주세요.":"영상을 불러오지 못했어요."); },
              onStateChange:e=>{ if(e.data!==1 && segEnd!=null && e.data!==3){ /* paused/ended by user */ } } } });
 };
@@ -706,6 +706,7 @@ function renderPbar(L){
     <button class="btn primary" type="button" data-act="play" ${sg?"":"disabled"}>▶ 이 문장 듣기 <kbd>Tab</kbd></button>
     <span class="seg">${sg?`${fmtTime(sg.start)} – ${sg.end!=null?fmtTime(sg.end):"끝"}`:"이 문장은 시간 정보가 없어요"}</span>
     <span class="rates" role="group" aria-label="재생 속도">${[0.5,0.75,1,1.25].map(r=>`<button type="button" data-rate="${r}" class="${S.rate===r?"on":""}">${r}×</button>`).join("")}</span>
+    <label class="chk"><input type="checkbox" id="lockSeg" ${S.lock?"checked":""}> 이 문장만 반복</label>
     <label class="chk"><input type="checkbox" id="autoPlay" ${S.autoPlay?"checked":""}> 문장 넘기면 자동 재생</label>
     <span class="right"><button class="btn ghost" type="button" data-act="setstart" title="지금 영상 위치를 이 문장의 시작으로">지금 위치를 문장 시작으로</button></span>`;
 }
@@ -718,20 +719,41 @@ function mountVideo(L){
   if(vid!==ytVid){ ytVid=vid; stopSeg(); if(yt&&ytReady){ const sg=segmentOf(L,S.idx); yt.cueVideoById({videoId:vid, startSeconds: sg?sg.start:0}); } }
 }
 function stopSeg(){ clearInterval(segTimer); segTimer=0; segEnd=null; }
+let segStartedAt=0;
+// Keeps playback inside the current sentence while "이 문장만 반복" is on:
+// reaching the end pauses and rewinds to the sentence start, so pressing play (anywhere) replays the same sentence.
+setInterval(()=>{
+  if(!S.lock || !yt || !ytReady) return;
+  const L=cur(); if(!L || !mediaSrc(L) || $("#ytBox").hidden) return;
+  const sg=segmentOf(L,S.idx); if(!sg) return;
+  let st, t; try{ st=yt.getPlayerState(); t=yt.getCurrentTime(); }catch(e){ return; }
+  if(st!==1) return;                                   // only act while playing
+  if(Date.now()-segStartedAt < 400) return;            // let a fresh seek settle
+  if(sg.end!=null && t>=sg.end){ yt.pauseVideo(); yt.seekTo(sg.start,true); }
+  else if(t < sg.start-0.6 || (sg.end!=null && t > sg.end+1.5)){ segStartedAt=Date.now(); yt.seekTo(sg.start,true); }
+},60);
 function playSentence(){
   const L=cur(); if(!L||!mediaSrc(L)) return;
   if(!yt||!ytReady){ toast("플레이어를 준비하는 중이에요. 잠시 후 다시 눌러 주세요."); return; }
   const sg=segmentOf(L,S.idx); if(!sg){ toast("이 문장은 시간 정보가 없어요."); return; }
-  stopSeg(); segEnd=sg.end;
+  stopSeg(); segStartedAt=Date.now();
   try{ yt.setPlaybackRate(S.rate); }catch(e){}
   yt.seekTo(sg.start,true); yt.playVideo();
-  if(segEnd!=null) segTimer=setInterval(()=>{
-    let t=0; try{ t=yt.getCurrentTime(); }catch(e){ return; }
-    const st=yt.getPlayerState();
-    if(st===2||st===0){ stopSeg(); return; }            // user paused or video ended
-    if(t>=segEnd){ yt.pauseVideo(); stopSeg(); }
-    else if(t < sg.start-1.5 || t > segEnd+3){ stopSeg(); } // user jumped elsewhere
-  },60);
+  if(!S.lock && sg.end!=null){                          // one-shot stop when not looping
+    segEnd=sg.end;
+    segTimer=setInterval(()=>{
+      let t=0,st; try{ t=yt.getCurrentTime(); st=yt.getPlayerState(); }catch(e){ return; }
+      if(Date.now()-segStartedAt<800) return;
+      if(st===2||st===0){ stopSeg(); return; }
+      if(t>=segEnd){ yt.pauseVideo(); stopSeg(); }
+    },60);
+  }
+}
+function cueSentence(){
+  const L=cur(); if(!L||!mediaSrc(L)||!yt||!ytReady) return;
+  const sg=segmentOf(L,S.idx); if(!sg) return;
+  stopSeg(); segStartedAt=Date.now();
+  try{ yt.pauseVideo(); yt.seekTo(sg.start,true); }catch(e){}
 }
 function pausePlayer(){ stopSeg(); try{ yt&&ytReady&&yt.pauseVideo(); }catch(e){} }
 function setStartHere(){
@@ -776,7 +798,7 @@ function go(i){
   const L=cur(); if(!L) return;
   i=Math.max(0,Math.min(L.sentences.length-1,i)); if(i===S.idx) return;
   S.idx=i; resetCard(); renderStudy();
-  if(S.autoPlay && mediaSrc(L)) playSentence(); else if(segEnd!=null) pausePlayer();
+  if(S.autoPlay && mediaSrc(L)) playSentence(); else cueSentence();
   if(!L.sample && store) store.update(L.id,{lastIndex:i});
   if(L.sample) L.lastIndex=i;
 }
@@ -864,6 +886,7 @@ document.addEventListener("keydown", e=>{
 document.addEventListener("input", e=>{ if(e.target.id==="answer") S.draft=e.target.value; });
 document.addEventListener("change", e=>{
   if(e.target.id==="jsonIn"){ const fs=[...(e.target.files||[])]; e.target.value=""; importJSON(fs); return; }
+  if(e.target.id==="lockSeg"){ S.lock=e.target.checked; try{ localStorage.setItem(LS_KEY+":lock",S.lock?"1":"0"); }catch(_){} return; }
   if(e.target.id==="autoPlay"){ S.autoPlay=e.target.checked; try{ localStorage.setItem(LS_KEY+":auto",S.autoPlay?"1":"0"); }catch(_){} return; }
   if(e.target.id!=="tIn") return;
   const L=cur(); if(!L||L.sample) return;
